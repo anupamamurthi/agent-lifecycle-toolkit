@@ -436,6 +436,14 @@ def get_tool_specs(tools):
 # AGENT STATE
 # ============================================================================
 
+class TrajectoryStep(TypedDict):
+    """A single step in the agent's trajectory."""
+    node: str
+    action: str
+    details: Optional[str]
+    outcome: str
+
+
 class AgentState(TypedDict, total=False):
     """State for the ALTK-enhanced agent."""
     messages: Annotated[List[Any], operator.add]
@@ -456,6 +464,8 @@ class AgentState(TypedDict, total=False):
     # Policy Guard (response)
     response_compliant: bool
     response_violations: List[str]
+    # Trajectory tracking
+    trajectory: Annotated[List[Dict[str, Any]], operator.add]
 
 
 # ============================================================================
@@ -544,11 +554,28 @@ Be concise and helpful in your responses."""
         else:
             print(f"    [Agent] Final response ready")
 
+        # Record trajectory
+        if current_tool_call:
+            trajectory_step = {
+                "node": "Agent",
+                "action": f"Call tool: {current_tool_call['name']}",
+                "details": str(current_tool_call['arguments']),
+                "outcome": "TOOL_CALL",
+            }
+        else:
+            trajectory_step = {
+                "node": "Agent",
+                "action": "Generate response",
+                "details": response.content[:100] + "..." if len(response.content) > 100 else response.content,
+                "outcome": "RESPONSE",
+            }
+
         return {
             "messages": [response],
             "current_tool_call": current_tool_call,
             "validation_passed": True,
             "validation_issues": [],
+            "trajectory": [trajectory_step],
         }
 
     # ========================================================================
@@ -598,10 +625,28 @@ Be concise and helpful in your responses."""
 
         if issues:
             print(f"    [SPARC] Validation FAILED: {issues}")
-            return {"validation_passed": False, "validation_issues": issues}
+            return {
+                "validation_passed": False,
+                "validation_issues": issues,
+                "trajectory": [{
+                    "node": "SPARC",
+                    "action": "Validate tool call",
+                    "details": "; ".join(issues),
+                    "outcome": "FAILED",
+                }],
+            }
         else:
             print(f"    [SPARC] Validation PASSED")
-            return {"validation_passed": True, "validation_issues": []}
+            return {
+                "validation_passed": True,
+                "validation_issues": [],
+                "trajectory": [{
+                    "node": "SPARC",
+                    "action": "Validate tool call",
+                    "details": f"Tool '{tool_call['name']}' validated",
+                    "outcome": "PASSED",
+                }],
+            }
 
     # ========================================================================
     # NODE: Tool Execution
@@ -626,9 +671,16 @@ Be concise and helpful in your responses."""
             tool_response = result_messages[-1].content
             print(f"    [Tool] Got response: {tool_response[:100]}...")
 
+        tool_name = state.get("current_tool_call", {}).get("name", "unknown")
         return {
             "messages": result_messages,
             "tool_response": tool_response,
+            "trajectory": [{
+                "node": "Tool",
+                "action": f"Execute {tool_name}",
+                "details": tool_response[:80] + "..." if tool_response and len(tool_response) > 80 else tool_response,
+                "outcome": "EXECUTED",
+            }],
         }
 
     # ========================================================================
@@ -666,10 +718,28 @@ Be concise and helpful in your responses."""
 
         if violations:
             print(f"    [ToolGuard] Policy VIOLATIONS: {violations}")
-            return {"policy_passed": False, "policy_violations": violations}
+            return {
+                "policy_passed": False,
+                "policy_violations": violations,
+                "trajectory": [{
+                    "node": "ToolGuard",
+                    "action": "Check policies",
+                    "details": "; ".join(violations),
+                    "outcome": "BLOCKED",
+                }],
+            }
         else:
             print(f"    [ToolGuard] All policies PASSED")
-            return {"policy_passed": True, "policy_violations": []}
+            return {
+                "policy_passed": True,
+                "policy_violations": [],
+                "trajectory": [{
+                    "node": "ToolGuard",
+                    "action": "Check policies",
+                    "details": f"Tool '{tool_name}' allowed",
+                    "outcome": "ALLOWED",
+                }],
+            }
 
     # ========================================================================
     # NODE: Silent Review (Post-tool review)
@@ -706,12 +776,24 @@ Be concise and helpful in your responses."""
             return {
                 "review_outcome": "issues_detected",
                 "review_details": "; ".join(issues),
+                "trajectory": [{
+                    "node": "Silent Review",
+                    "action": "Review tool response",
+                    "details": "; ".join(issues),
+                    "outcome": "ISSUES_DETECTED",
+                }],
             }
         else:
             print(f"    [Silent Review] Response looks good")
             return {
                 "review_outcome": "ok",
                 "review_details": None,
+                "trajectory": [{
+                    "node": "Silent Review",
+                    "action": "Review tool response",
+                    "details": "No issues found",
+                    "outcome": "OK",
+                }],
             }
 
     # ========================================================================
@@ -755,12 +837,24 @@ Be concise and helpful in your responses."""
             return {
                 "repair_attempted": True,
                 "repair_suggestion": suggestion,
+                "trajectory": [{
+                    "node": "RAG Repair",
+                    "action": "Search documentation",
+                    "details": f"Found {len(relevant_docs)} relevant doc(s) for '{tool_name}'",
+                    "outcome": "DOCS_FOUND",
+                }],
             }
         else:
             print(f"    [RAG Repair] No relevant documentation found")
             return {
                 "repair_attempted": True,
                 "repair_suggestion": None,
+                "trajectory": [{
+                    "node": "RAG Repair",
+                    "action": "Search documentation",
+                    "details": "No relevant documentation found",
+                    "outcome": "NO_DOCS",
+                }],
             }
 
     # ========================================================================
@@ -795,10 +889,28 @@ Be concise and helpful in your responses."""
 
         if violations:
             print(f"    [Policy Guard] Response VIOLATIONS: {violations}")
-            return {"response_compliant": False, "response_violations": violations}
+            return {
+                "response_compliant": False,
+                "response_violations": violations,
+                "trajectory": [{
+                    "node": "Policy Guard",
+                    "action": "Check response compliance",
+                    "details": "; ".join(violations),
+                    "outcome": "VIOLATIONS",
+                }],
+            }
         else:
             print(f"    [Policy Guard] Response is COMPLIANT")
-            return {"response_compliant": True, "response_violations": []}
+            return {
+                "response_compliant": True,
+                "response_violations": [],
+                "trajectory": [{
+                    "node": "Policy Guard",
+                    "action": "Check response compliance",
+                    "details": "Response is compliant",
+                    "outcome": "COMPLIANT",
+                }],
+            }
 
     # ========================================================================
     # ROUTING FUNCTIONS
@@ -921,8 +1033,8 @@ Be concise and helpful in your responses."""
 # MAIN INTERFACE
 # ============================================================================
 
-def ask_question(agent, question: str) -> str:
-    """Ask the agent a question and get a response."""
+def ask_question(agent, question: str) -> tuple:
+    """Ask the agent a question and get a response with trajectory."""
     print(f"\n  Processing...")
 
     result = agent.invoke({
@@ -930,7 +1042,44 @@ def ask_question(agent, question: str) -> str:
     })
 
     final_message = result["messages"][-1]
-    return final_message.content
+    trajectory = result.get("trajectory", [])
+
+    return final_message.content, trajectory
+
+
+def print_trajectory(trajectory: List[Dict[str, Any]]) -> None:
+    """Print the trajectory in a nice format."""
+    if not trajectory:
+        print("\n  Trajectory: (empty)")
+        return
+
+    print("\n  Trajectory:")
+    print("  " + "-" * 66)
+
+    for i, step in enumerate(trajectory, 1):
+        node = step.get("node", "?")
+        action = step.get("action", "?")
+        outcome = step.get("outcome", "?")
+        details = step.get("details", "")
+
+        # Color-code outcomes
+        if outcome in ["PASSED", "ALLOWED", "OK", "COMPLIANT", "EXECUTED", "RESPONSE"]:
+            outcome_display = f"[{outcome}]"
+        elif outcome in ["FAILED", "BLOCKED", "VIOLATIONS"]:
+            outcome_display = f"[{outcome}]"
+        else:
+            outcome_display = f"[{outcome}]"
+
+        print(f"  {i}. {node:15} | {action:30} | {outcome_display}")
+
+        # Show details on next line if present and meaningful
+        if details and len(details) > 0:
+            # Truncate long details
+            if len(details) > 60:
+                details = details[:57] + "..."
+            print(f"     {'':15} | Details: {details}")
+
+    print("  " + "-" * 66)
 
 
 # ============================================================================
@@ -997,5 +1146,10 @@ if __name__ == "__main__":
         print(f"\n{'═' * 70}")
         print(f"Test {i}: {q}")
         print(f"{'═' * 70}")
-        response = ask_question(agent, q)
-        print(f"\nAnswer: {response}")
+        response, trajectory = ask_question(agent, q)
+
+        # Print the trajectory
+        print_trajectory(trajectory)
+
+        # Print the answer
+        print(f"\n  Answer: {response}")
