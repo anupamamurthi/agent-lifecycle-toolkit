@@ -1,0 +1,72 @@
+{
+  "title": "Agent Leaderboard",
+  "categories": {
+    "single_turn": {
+      "label": "Single Turn",
+      "subcategories": {
+        "api_styles": {
+          "label": "API Styles",
+          "metrics": ["business_intelligence", "dashboard_apis"]
+        },
+        "reasoning": {
+          "label": "Reasoning",
+          "metrics": ["multi_hop", "policy_adherence"]
+        }
+      }
+    },
+    "multi_turn": {
+      "label": "Multi-turn",
+      "subcategories": {
+        "joint_reasoning": {
+          "label": "Joint Structured/Unstructured Reasoning",
+          "metrics": ["multi_hop_mt"]
+        }
+      }
+    }
+  },
+  "metrics": {
+    "business_intelligence": "Business Intelligence",
+    "dashboard_apis": "Dashboard APIs",
+    "multi_hop": "Multi-hop",
+    "policy_adherence": "Policy Adherence",
+    "multi_hop_mt": "Multi-hop"
+  },
+  "agents": [
+    {
+      "name": "Agent Y",
+      "scores": {
+        "business_intelligence": 90.0,
+        "dashboard_apis": 87.0,
+        "multi_hop": 82.0,
+        "policy_adherence": 91.0,
+        "multi_hop_mt": 85.0
+      }
+    },
+    {
+      "name": "Agent X",
+      "scores": {
+        "business_intelligence": 85.0,
+        "dashboard_apis": 92.0,
+        "multi_hop": 78.0,
+        "policy_adherence": 88.0,
+        "multi_hop_mt": 82.0
+      }
+    },
+    {
+      "name": "Agent Z",
+      "scores": {
+        "business_intelligence": 72.0,
+        "dashboard_apis": 68.0,
+        "multi_hop": 75.0,
+        "policy_adherence": 70.0,
+        "multi_hop_mt": 65.0
+      }
+    }
+  ],
+  "score_ranges": {
+    "excellent": { "min": 90, "max": 100, "color": "#22c55e", "label": "Excellent" },
+    "good": { "min": 80, "max": 89, "color": "#3b82f6", "label": "Good" },
+    "fair": { "min": 70, "max": 79, "color": "#eab308", "label": "Fair" },
+    "needs_improvement": { "min": 0, "max": 69, "color": "#ef4444", "label": "Needs Improvement" }
+  }
+}
