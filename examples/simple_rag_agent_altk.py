@@ -126,6 +126,171 @@ def get_current_date() -> str:
 
 
 # ============================================================================
+# ADDITIONAL TOOLS (to showcase SPARC validation and Silent Review)
+# ============================================================================
+
+# Fake database of users
+USERS_DB = {
+    "U001": {"name": "Alice Smith", "email": "alice@company.com", "department": "Engineering", "status": "active"},
+    "U002": {"name": "Bob Johnson", "email": "bob@company.com", "department": "Sales", "status": "active"},
+    "U003": {"name": "Carol White", "email": "carol@company.com", "department": "HR", "status": "inactive"},
+}
+
+# Fake inventory database
+INVENTORY_DB = {
+    "SKU-001": {"name": "Laptop Pro 15", "quantity": 50, "price": 1299.99, "status": "in_stock"},
+    "SKU-002": {"name": "Wireless Mouse", "quantity": 0, "price": 29.99, "status": "out_of_stock"},
+    "SKU-003": {"name": "USB-C Hub", "quantity": 25, "price": 79.99, "status": "in_stock"},
+}
+
+
+@tool
+def get_user_info(user_id: str, include_email: bool = False) -> str:
+    """
+    Get information about a user by their ID.
+
+    Args:
+        user_id: The user ID (e.g., "U001", "U002")
+        include_email: Whether to include the user's email in the response
+    """
+    if user_id not in USERS_DB:
+        # This will trigger Silent Review - "not found" response
+        return f"Error: User '{user_id}' not found in the system."
+
+    user = USERS_DB[user_id]
+    info = f"User: {user['name']}, Department: {user['department']}, Status: {user['status']}"
+    if include_email:
+        info += f", Email: {user['email']}"
+    return info
+
+
+@tool
+def check_inventory(sku: str, warehouse: str = "main") -> str:
+    """
+    Check inventory levels for a product.
+
+    Args:
+        sku: The product SKU (e.g., "SKU-001")
+        warehouse: The warehouse to check ("main", "west", "east")
+    """
+    valid_warehouses = ["main", "west", "east"]
+    if warehouse not in valid_warehouses:
+        # This will trigger Silent Review - invalid parameter value
+        return f"Error: Invalid warehouse '{warehouse}'. Valid options: {valid_warehouses}"
+
+    if sku not in INVENTORY_DB:
+        return f"Error: Product '{sku}' not found."
+
+    item = INVENTORY_DB[sku]
+    if item["status"] == "out_of_stock":
+        # This might trigger Silent Review - item unavailable
+        return f"Warning: {item['name']} (SKU: {sku}) is OUT OF STOCK. Quantity: 0"
+
+    return f"Product: {item['name']}, SKU: {sku}, Quantity: {item['quantity']}, Price: ${item['price']}, Warehouse: {warehouse}"
+
+
+@tool
+def create_support_ticket(
+    title: str,
+    description: str,
+    priority: str,
+    category: str
+) -> str:
+    """
+    Create a new support ticket.
+
+    Args:
+        title: Brief title for the ticket (required)
+        description: Detailed description of the issue (required)
+        priority: Ticket priority - must be "low", "medium", "high", or "critical" (required)
+        category: Ticket category - must be "bug", "feature", "question", or "other" (required)
+    """
+    valid_priorities = ["low", "medium", "high", "critical"]
+    valid_categories = ["bug", "feature", "question", "other"]
+
+    errors = []
+    if priority not in valid_priorities:
+        errors.append(f"Invalid priority '{priority}'. Must be one of: {valid_priorities}")
+    if category not in valid_categories:
+        errors.append(f"Invalid category '{category}'. Must be one of: {valid_categories}")
+    if len(title) < 5:
+        errors.append("Title must be at least 5 characters")
+    if len(description) < 10:
+        errors.append("Description must be at least 10 characters")
+
+    if errors:
+        return f"Failed to create ticket. Errors: {'; '.join(errors)}"
+
+    import random
+    ticket_id = f"TKT-{random.randint(1000, 9999)}"
+    return f"Success: Created ticket {ticket_id} - '{title}' (Priority: {priority}, Category: {category})"
+
+
+@tool
+def send_notification(
+    recipient_id: str,
+    message: str,
+    channel: str = "email"
+) -> str:
+    """
+    Send a notification to a user.
+
+    Args:
+        recipient_id: The user ID to send notification to (required)
+        message: The notification message (required)
+        channel: Notification channel - "email", "sms", or "slack" (default: "email")
+    """
+    valid_channels = ["email", "sms", "slack"]
+
+    if channel not in valid_channels:
+        return f"Error: Invalid channel '{channel}'. Valid options: {valid_channels}"
+
+    if recipient_id not in USERS_DB:
+        return f"Error: Recipient '{recipient_id}' not found."
+
+    user = USERS_DB[recipient_id]
+    if user["status"] == "inactive":
+        # Silent error - user exists but is inactive
+        return f"Warning: User {user['name']} is inactive. Notification queued but may not be delivered."
+
+    return f"Success: Notification sent to {user['name']} via {channel}: '{message[:50]}...'" if len(message) > 50 else f"Success: Notification sent to {user['name']} via {channel}: '{message}'"
+
+
+@tool
+def transfer_funds(
+    from_account: str,
+    to_account: str,
+    amount: float,
+    currency: str = "USD"
+) -> str:
+    """
+    Transfer funds between accounts. USE WITH CAUTION.
+
+    Args:
+        from_account: Source account ID (required)
+        to_account: Destination account ID (required)
+        amount: Amount to transfer - must be positive (required)
+        currency: Currency code - "USD", "EUR", "GBP" (default: "USD")
+    """
+    valid_currencies = ["USD", "EUR", "GBP"]
+
+    if currency not in valid_currencies:
+        return f"Error: Invalid currency '{currency}'. Supported: {valid_currencies}"
+
+    if amount <= 0:
+        return f"Error: Amount must be positive. Got: {amount}"
+
+    if amount > 10000:
+        return f"Error: Amount ${amount} exceeds single transfer limit of $10,000. Requires manager approval."
+
+    if from_account == to_account:
+        return f"Error: Source and destination accounts cannot be the same."
+
+    # Simulate successful transfer
+    return f"Success: Transferred {currency} {amount:.2f} from {from_account} to {to_account}. Transaction ID: TXN-{hash(from_account + to_account) % 100000:05d}"
+
+
+# ============================================================================
 # TOOL SPECIFICATIONS (for ALTK validation)
 # ============================================================================
 
@@ -185,7 +350,16 @@ def create_rag_agent_altk():
     )
 
     # Define tools
-    tools = [search_knowledge_base, calculate, get_current_date]
+    tools = [
+        search_knowledge_base,
+        calculate,
+        get_current_date,
+        get_user_info,
+        check_inventory,
+        create_support_ticket,
+        send_notification,
+        transfer_funds,
+    ]
     tool_specs = get_tool_specs(tools)
 
     # Bind tools to the model
@@ -197,13 +371,18 @@ def create_rag_agent_altk():
     # System prompt
     system_prompt = """You are a helpful assistant that can answer questions using available tools.
 
-When answering questions:
-1. If the question is about company policies, products, or technical information,
-   use the search_knowledge_base tool to find relevant information.
-2. If the question involves calculations, use the calculate tool.
-3. If the question involves dates or times, use the get_current_date tool.
+Available tools:
+1. search_knowledge_base - Search company policies, products, and technical docs
+2. calculate - Perform math calculations
+3. get_current_date - Get current date and time
+4. get_user_info - Look up user information by ID (e.g., U001, U002, U003)
+5. check_inventory - Check product inventory by SKU (e.g., SKU-001, SKU-002)
+6. create_support_ticket - Create a support ticket (requires title, description, priority, category)
+7. send_notification - Send notification to a user via email/sms/slack
+8. transfer_funds - Transfer money between accounts
 
-Always base your answers on the information retrieved from tools when available.
+When using tools, make sure to provide all required parameters with valid values.
+Always base your answers on the information retrieved from tools.
 Be concise and helpful in your responses."""
 
     # ========================================================================
@@ -445,22 +624,49 @@ if __name__ == "__main__":
     print("Simple RAG Agent with ALTK Components - Demo")
     print("=" * 60)
     print("\nALTK Components in use:")
-    print("  - SPARC Validation: Pre-tool validation")
-    print("  - Silent Review: Post-tool error detection")
+    print("  - SPARC Validation: Pre-tool validation (checks params, types)")
+    print("  - Silent Review: Post-tool error detection (catches errors, warnings)")
+    print("\nTest scenarios include:")
+    print("  - Valid tool calls (should pass)")
+    print("  - User not found (Silent Review catches 'Error')")
+    print("  - Out of stock item (Silent Review catches 'Warning')")
+    print("  - Invalid parameter values (Silent Review catches 'Error')")
+    print("  - Missing required params (SPARC catches)")
+    print("  - Amount exceeds limit (Silent Review catches)")
     print("\nNote: Make sure Ollama is running (ollama serve)")
     print("And you have a model pulled (ollama pull llama3.2)")
 
     # Create the agent
     agent = create_rag_agent_altk()
 
-    # Test questions
+    # Test questions - designed to showcase SPARC validation and Silent Review
     questions = [
+        # Basic RAG query
         "What is the vacation policy for new employees?",
-        "How much does the Pro plan cost?",
+
+        # Math calculation
         "What is 15% of $199.99?",
-        "What are the API rate limits for the Pro plan?",
-        "What date is it today?",
-        "Can I work remotely? What's the policy?",
+
+        # User lookup - will succeed
+        "Get info about user U001, include their email",
+
+        # User lookup - will fail (triggers Silent Review: "not found")
+        "Get info about user U999",
+
+        # Inventory check - out of stock (triggers Silent Review: "warning")
+        "Check inventory for SKU-002",
+
+        # Inventory check - invalid warehouse (triggers Silent Review: "error")
+        "Check inventory for SKU-001 in the tokyo warehouse",
+
+        # Create ticket - tests multiple required params (SPARC validation)
+        "Create a support ticket: title='Login broken', description='Cannot log in since Monday morning', priority='high', category='bug'",
+
+        # Send notification to inactive user (triggers Silent Review: "warning")
+        "Send a slack notification to user U003 saying 'Please review the document'",
+
+        # Transfer funds - will hit limit (triggers Silent Review: "error")
+        "Transfer $15000 from ACC-001 to ACC-002",
     ]
 
     for q in questions:
