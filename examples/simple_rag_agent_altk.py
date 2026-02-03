@@ -4,8 +4,16 @@ Simple LangGraph Agent with Tools, RAG, and ALTK Enhancements
 This example demonstrates how to create a LangGraph-based agent enhanced with
 ALTK components for improved reliability:
 
+PRE-TOOL PHASE:
 - SPARC: Pre-tool validation to ensure tool calls are correct
+- ToolGuard: Policy enforcement to block dangerous operations
+
+POST-TOOL PHASE:
 - Silent Review: Post-tool review to detect silent errors in responses
+- RAG Repair: Attempt to fix failed tool calls using documentation
+
+PRE-RESPONSE PHASE:
+- Policy Guard: Check final response for compliance before returning
 
 The agent can answer questions using tools and a knowledge base (RAG).
 """
@@ -61,6 +69,120 @@ KNOWLEDGE_BASE = {
     - SDK: Python, JavaScript, Java, and Go SDKs available
     """,
 }
+
+# ============================================================================
+# TOOLGUARD POLICIES (for policy enforcement)
+# ============================================================================
+
+TOOL_POLICIES = {
+    "transfer_funds": [
+        {
+            "name": "max_transfer_limit",
+            "description": "Single transfers cannot exceed $5,000 without manager approval",
+            "check": lambda args: args.get("amount", 0) <= 5000,
+            "violation_message": "Transfer amount ${amount} exceeds policy limit of $5,000. Requires manager approval.",
+        },
+        {
+            "name": "no_self_transfer",
+            "description": "Cannot transfer to the same account",
+            "check": lambda args: args.get("from_account") != args.get("to_account"),
+            "violation_message": "Policy violation: Cannot transfer funds to the same account.",
+        },
+    ],
+    "send_notification": [
+        {
+            "name": "no_inactive_users",
+            "description": "Cannot send notifications to inactive users",
+            "check": lambda args: args.get("recipient_id") not in ["U003"],  # U003 is inactive
+            "violation_message": "Policy violation: Cannot send notifications to inactive users.",
+        },
+    ],
+    "create_support_ticket": [
+        {
+            "name": "no_critical_without_description",
+            "description": "Critical tickets must have detailed descriptions (50+ chars)",
+            "check": lambda args: args.get("priority") != "critical" or len(args.get("description", "")) >= 50,
+            "violation_message": "Policy violation: Critical tickets require detailed descriptions (50+ characters).",
+        },
+    ],
+}
+
+# ============================================================================
+# RAG REPAIR DOCUMENTATION (for fixing failed tool calls)
+# ============================================================================
+
+REPAIR_DOCS = {
+    "user_ids": """
+    Valid User IDs in the system:
+    - U001: Alice Smith (Engineering, active)
+    - U002: Bob Johnson (Sales, active)
+    - U003: Carol White (HR, inactive)
+
+    Common mistakes:
+    - Using names instead of IDs (use "U001" not "Alice")
+    - Using lowercase (use "U001" not "u001")
+    - Missing the "U" prefix (use "U001" not "001")
+    """,
+    "inventory_skus": """
+    Valid Product SKUs:
+    - SKU-001: Laptop Pro 15 (in stock)
+    - SKU-002: Wireless Mouse (out of stock)
+    - SKU-003: USB-C Hub (in stock)
+
+    Valid warehouses: "main", "west", "east"
+
+    Common mistakes:
+    - Using product names instead of SKUs
+    - Invalid warehouse names (only main/west/east are valid)
+    """,
+    "support_tickets": """
+    Support Ticket Requirements:
+    - title: Must be at least 5 characters
+    - description: Must be at least 10 characters
+    - priority: Must be one of: "low", "medium", "high", "critical"
+    - category: Must be one of: "bug", "feature", "question", "other"
+
+    Common mistakes:
+    - Using "urgent" instead of "critical" for priority
+    - Using "issue" instead of "bug" for category
+    """,
+    "transfers": """
+    Fund Transfer Rules:
+    - Amount must be positive
+    - Single transfer limit: $10,000 (policy limit: $5,000)
+    - Supported currencies: USD, EUR, GBP
+    - Cannot transfer to same account
+
+    Common mistakes:
+    - Amount as string instead of number
+    - Using unsupported currency codes
+    """,
+}
+
+# ============================================================================
+# RESPONSE POLICIES (for Policy Guard)
+# ============================================================================
+
+RESPONSE_POLICIES = [
+    {
+        "name": "no_pii_exposure",
+        "description": "Response should not expose full email addresses",
+        "check": lambda response: "@" not in response or "company.com" not in response,
+        "violation_message": "Response contains potentially sensitive email information.",
+    },
+    {
+        "name": "no_account_numbers",
+        "description": "Response should not expose raw account numbers",
+        "check": lambda response: "ACC-" not in response or "TXN-" in response,  # Allow transaction IDs
+        "violation_message": "Response contains raw account numbers.",
+    },
+    {
+        "name": "professional_tone",
+        "description": "Response should maintain professional tone",
+        "check": lambda response: not any(word in response.lower() for word in ["stupid", "dumb", "idiot"]),
+        "violation_message": "Response contains unprofessional language.",
+    },
+]
 
 
 # ============================================================================
@@ -319,10 +441,21 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[List[Any], operator.add]
     current_tool_call: Optional[Dict[str, Any]]
     tool_response: Optional[str]
+    # SPARC validation
     validation_passed: bool
     validation_issues: List[str]
+    # ToolGuard policy
+    policy_passed: bool
+    policy_violations: List[str]
+    # Silent Review
     review_outcome: Optional[str]
     review_details: Optional[str]
+    # RAG Repair
+    repair_attempted: bool
+    repair_suggestion: Optional[str]
+    # Policy Guard (response)
+    response_compliant: bool
+    response_violations: List[str]
 
 
 # ============================================================================
@@ -499,6 +632,46 @@ Be concise and helpful in your responses."""
         }
 
     # ========================================================================
+    # NODE: ToolGuard (Policy enforcement - runs after SPARC, before tools)
+    # ========================================================================
+    def toolguard_node(state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        ToolGuard node - enforces policies before tool execution.
+
+        Checks tool calls against defined policies to prevent:
+        - Dangerous operations (large transfers)
+        - Policy violations (sending to inactive users)
+        - Business rule violations
+        """
+        print("    [ToolGuard] Checking policies...")
+
+        tool_call = state.get("current_tool_call")
+        if not tool_call:
+            return {"policy_passed": True, "policy_violations": []}
+
+        tool_name = tool_call.get("name", "")
+        tool_args = tool_call.get("arguments", {})
+
+        violations = []
+
+        # Check policies for this tool
+        if tool_name in TOOL_POLICIES:
+            for policy in TOOL_POLICIES[tool_name]:
+                try:
+                    if not policy["check"](tool_args):
+                        violation_msg = policy["violation_message"].format(**tool_args)
+                        violations.append(f"{policy['name']}: {violation_msg}")
+                except Exception as e:
+                    pass  # Skip policy if check fails
+
+        if violations:
+            print(f"    [ToolGuard] Policy VIOLATIONS: {violations}")
+            return {"policy_passed": False, "policy_violations": violations}
+        else:
+            print(f"    [ToolGuard] All policies PASSED")
+            return {"policy_passed": True, "policy_violations": []}
+
+    # ========================================================================
     # NODE: Silent Review (Post-tool review)
     # ========================================================================
     def silent_review_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -542,10 +715,96 @@ Be concise and helpful in your responses."""
             }
 
     # ========================================================================
+    # NODE: RAG Repair (Attempt to fix failed tool calls)
+    # ========================================================================
+    def rag_repair_node(state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        RAG Repair node - uses documentation to suggest fixes for failed tool calls.
+
+        When a tool call fails or returns errors, this node:
+        1. Searches repair documentation for relevant info
+        2. Suggests corrections based on documentation
+        3. Provides guidance to the agent for retry
+        """
+        print("    [RAG Repair] Searching documentation for fixes...")
+
+        tool_call = state.get("current_tool_call", {})
+        tool_response = state.get("tool_response", "")
+        tool_name = tool_call.get("name", "")
+
+        # Find relevant documentation
+        relevant_docs = []
+        response_lower = tool_response.lower() if tool_response else ""
+
+        # Match error to documentation
+        if "user" in tool_name or "user" in response_lower:
+            relevant_docs.append(REPAIR_DOCS["user_ids"])
+
+        if "inventory" in tool_name or "sku" in response_lower or "warehouse" in response_lower:
+            relevant_docs.append(REPAIR_DOCS["inventory_skus"])
+
+        if "ticket" in tool_name or "priority" in response_lower or "category" in response_lower:
+            relevant_docs.append(REPAIR_DOCS["support_tickets"])
+
+        if "transfer" in tool_name or "amount" in response_lower or "currency" in response_lower:
+            relevant_docs.append(REPAIR_DOCS["transfers"])
+
+        if relevant_docs:
+            suggestion = f"Based on documentation:\n" + "\n---\n".join(relevant_docs)
+            print(f"    [RAG Repair] Found relevant documentation for '{tool_name}'")
+            return {
+                "repair_attempted": True,
+                "repair_suggestion": suggestion,
+            }
+        else:
+            print(f"    [RAG Repair] No relevant documentation found")
+            return {
+                "repair_attempted": True,
+                "repair_suggestion": None,
+            }
+
+    # ========================================================================
+    # NODE: Policy Guard (Check response compliance before returning)
+    # ========================================================================
+    def policy_guard_node(state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Policy Guard node - checks final response for compliance.
+
+        Ensures the response doesn't contain:
+        - Sensitive information (PII, account numbers)
+        - Unprofessional language
+        - Policy-violating content
+        """
+        print("    [Policy Guard] Checking response compliance...")
+
+        messages = state.get("messages", [])
+        last_message = messages[-1] if messages else None
+
+        if not last_message:
+            return {"response_compliant": True, "response_violations": []}
+
+        response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
+        violations = []
+
+        for policy in RESPONSE_POLICIES:
+            try:
+                if not policy["check"](response_text):
+                    violations.append(f"{policy['name']}: {policy['violation_message']}")
+            except Exception:
+                pass
+
+        if violations:
+            print(f"    [Policy Guard] Response VIOLATIONS: {violations}")
+            return {"response_compliant": False, "response_violations": violations}
+        else:
+            print(f"    [Policy Guard] Response is COMPLIANT")
+            return {"response_compliant": True, "response_violations": []}
+
+    # ========================================================================
     # ROUTING FUNCTIONS
     # ========================================================================
     def should_continue(state: Dict[str, Any]) -> str:
-        """Decide whether to validate, or end."""
+        """Decide whether to validate, or end (go to policy guard)."""
         messages = state.get("messages", [])
         last_message = messages[-1] if messages else None
 
@@ -555,45 +814,104 @@ Be concise and helpful in your responses."""
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             return "validate"
 
-        return "end"
+        # No tool calls - go to policy guard before ending
+        return "policy_guard"
 
     def route_after_validation(state: Dict[str, Any]) -> str:
-        """Route based on validation result."""
+        """Route based on SPARC validation result."""
         if state.get("validation_passed", True):
-            return "tools"
+            return "toolguard"
         else:
             # On validation failure, go back to agent with feedback
             return "agent"
+
+    def route_after_toolguard(state: Dict[str, Any]) -> str:
+        """Route based on ToolGuard policy check."""
+        if state.get("policy_passed", True):
+            return "tools"
+        else:
+            # On policy violation, go back to agent with feedback
+            return "agent"
+
+    def route_after_review(state: Dict[str, Any]) -> str:
+        """Route based on Silent Review result."""
+        review_outcome = state.get("review_outcome", "ok")
+        if review_outcome == "issues_detected":
+            # Try RAG repair first
+            return "repair"
+        return "agent"
+
+    def route_after_repair(state: Dict[str, Any]) -> str:
+        """After repair, always go back to agent."""
+        return "agent"
+
+    def route_after_policy_guard(state: Dict[str, Any]) -> str:
+        """Route based on Policy Guard result."""
+        if state.get("response_compliant", True):
+            return "end"
+        else:
+            # Response has violations - could retry or warn
+            # For now, we'll still end but the violations are logged
+            return "end"
 
     # ========================================================================
     # BUILD THE GRAPH
     # ========================================================================
     workflow = StateGraph(AgentState)
 
-    # Add nodes
+    # Add all nodes
     workflow.add_node("agent", agent_node)
-    workflow.add_node("validate", sparc_validation_node)
-    workflow.add_node("tools", tool_node)
-    workflow.add_node("review", silent_review_node)
+    workflow.add_node("validate", sparc_validation_node)      # SPARC validation
+    workflow.add_node("toolguard", toolguard_node)            # ToolGuard policy
+    workflow.add_node("tools", tool_node)                      # Tool execution
+    workflow.add_node("review", silent_review_node)            # Silent Review
+    workflow.add_node("repair", rag_repair_node)               # RAG Repair
+    workflow.add_node("policy_guard", policy_guard_node)       # Policy Guard
 
     # Set entry point
     workflow.set_entry_point("agent")
 
     # Add edges
+    # Agent -> SPARC validation (if tool call) or Policy Guard (if final response)
     workflow.add_conditional_edges(
         "agent",
         should_continue,
-        {"validate": "validate", "end": END}
+        {"validate": "validate", "policy_guard": "policy_guard", "end": END}
     )
 
+    # SPARC -> ToolGuard (if passed) or back to Agent (if failed)
     workflow.add_conditional_edges(
         "validate",
         route_after_validation,
+        {"toolguard": "toolguard", "agent": "agent"}
+    )
+
+    # ToolGuard -> Tools (if passed) or back to Agent (if policy violation)
+    workflow.add_conditional_edges(
+        "toolguard",
+        route_after_toolguard,
         {"tools": "tools", "agent": "agent"}
     )
 
+    # Tools -> Silent Review
     workflow.add_edge("tools", "review")
-    workflow.add_edge("review", "agent")
+
+    # Silent Review -> RAG Repair (if issues) or Agent (if ok)
+    workflow.add_conditional_edges(
+        "review",
+        route_after_review,
+        {"repair": "repair", "agent": "agent"}
+    )
+
+    # RAG Repair -> Agent
+    workflow.add_edge("repair", "agent")
+
+    # Policy Guard -> End
+    workflow.add_conditional_edges(
+        "policy_guard",
+        route_after_policy_guard,
+        {"end": END}
+    )
 
     # Compile
     return workflow.compile()
@@ -620,58 +938,64 @@ def ask_question(agent, question: str) -> str:
 # ============================================================================
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Simple RAG Agent with ALTK Components - Demo")
-    print("=" * 60)
+    print("=" * 70)
+    print("  Simple RAG Agent with Full ALTK Component Stack - Demo")
+    print("=" * 70)
     print("\nALTK Components in use:")
-    print("  - SPARC Validation: Pre-tool validation (checks params, types)")
-    print("  - Silent Review: Post-tool error detection (catches errors, warnings)")
-    print("\nTest scenarios include:")
-    print("  - Valid tool calls (should pass)")
-    print("  - User not found (Silent Review catches 'Error')")
-    print("  - Out of stock item (Silent Review catches 'Warning')")
-    print("  - Invalid parameter values (Silent Review catches 'Error')")
-    print("  - Missing required params (SPARC catches)")
-    print("  - Amount exceeds limit (Silent Review catches)")
+    print("  PRE-TOOL PHASE:")
+    print("    - SPARC Validation: Validates tool calls (params, types, schema)")
+    print("    - ToolGuard: Enforces policies (blocks dangerous operations)")
+    print("  POST-TOOL PHASE:")
+    print("    - Silent Review: Detects errors in tool responses")
+    print("    - RAG Repair: Suggests fixes using documentation")
+    print("  PRE-RESPONSE PHASE:")
+    print("    - Policy Guard: Checks response compliance (PII, professionalism)")
+    print("\nTest scenarios:")
+    print("  1. Valid queries (all checks pass)")
+    print("  2. User not found (Silent Review + RAG Repair)")
+    print("  3. Policy violation - large transfer (ToolGuard blocks)")
+    print("  4. Policy violation - notify inactive user (ToolGuard blocks)")
+    print("  5. Invalid warehouse (Silent Review + RAG Repair)")
+    print("  6. Out of stock (Silent Review detects warning)")
     print("\nNote: Make sure Ollama is running (ollama serve)")
     print("And you have a model pulled (ollama pull llama3.2)")
 
     # Create the agent
     agent = create_rag_agent_altk()
 
-    # Test questions - designed to showcase SPARC validation and Silent Review
+    # Test questions - designed to showcase ALL ALTK components
     questions = [
-        # Basic RAG query
+        # 1. Basic RAG query - should pass all checks
         "What is the vacation policy for new employees?",
 
-        # Math calculation
-        "What is 15% of $199.99?",
-
-        # User lookup - will succeed
+        # 2. Valid user lookup - should pass all checks
         "Get info about user U001, include their email",
 
-        # User lookup - will fail (triggers Silent Review: "not found")
+        # 3. User not found - triggers Silent Review + RAG Repair
         "Get info about user U999",
 
-        # Inventory check - out of stock (triggers Silent Review: "warning")
-        "Check inventory for SKU-002",
+        # 4. ToolGuard: Large transfer blocked by policy ($5000 limit)
+        "Transfer $7500 from ACC-001 to ACC-002",
 
-        # Inventory check - invalid warehouse (triggers Silent Review: "error")
+        # 5. ToolGuard: Notification to inactive user blocked
+        "Send a slack notification to user U003 saying 'Please review'",
+
+        # 6. Invalid warehouse - triggers Silent Review + RAG Repair
         "Check inventory for SKU-001 in the tokyo warehouse",
 
-        # Create ticket - tests multiple required params (SPARC validation)
-        "Create a support ticket: title='Login broken', description='Cannot log in since Monday morning', priority='high', category='bug'",
+        # 7. Out of stock - Silent Review detects warning
+        "Check inventory for SKU-002",
 
-        # Send notification to inactive user (triggers Silent Review: "warning")
-        "Send a slack notification to user U003 saying 'Please review the document'",
+        # 8. Valid transfer within policy limits - should pass
+        "Transfer $500 from ACC-001 to ACC-002",
 
-        # Transfer funds - will hit limit (triggers Silent Review: "error")
-        "Transfer $15000 from ACC-001 to ACC-002",
+        # 9. Create support ticket - tests SPARC validation
+        "Create a support ticket: title='Login issue', description='Cannot login since Monday morning update', priority='high', category='bug'",
     ]
 
-    for q in questions:
-        print(f"\n{'─' * 60}")
-        print(f"Q: {q}")
-        print(f"{'─' * 60}")
+    for i, q in enumerate(questions, 1):
+        print(f"\n{'═' * 70}")
+        print(f"Test {i}: {q}")
+        print(f"{'═' * 70}")
         response = ask_question(agent, q)
-        print(f"\nA: {response}")
+        print(f"\nAnswer: {response}")
